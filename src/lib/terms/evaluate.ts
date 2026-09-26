@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   ConstraintResult,
   TermsDecision,
   TreasuryMandate,
@@ -17,96 +17,86 @@ function checkReserve(
     constraint: "minimum_cash_reserve",
     status: pass ? "PASS" : "FAIL",
     reason: pass
-      ? `Allocation leaves $${remaining.toFixed(
-          2,
-        )}, satisfying the $${mandate.minimumCashReserveUsd.toFixed(
-          2,
-        )} reserve floor.`
-      : `Allocation leaves $${remaining.toFixed(
-          2,
-        )}, below the required $${mandate.minimumCashReserveUsd.toFixed(
-          2,
-        )} reserve floor.`,
+      ? `Allocation leaves $${remaining.toFixed(2)}, satisfying the $${mandate.minimumCashReserveUsd.toFixed(2)} reserve floor.`
+      : `Allocation leaves $${remaining.toFixed(2)}, below the required $${mandate.minimumCashReserveUsd.toFixed(2)} reserve floor.`,
   };
 }
 
-function checkLiquidity(
+function checkProduct(
   mandate: TreasuryMandate,
   evidence: VaultEvidence,
 ): ConstraintResult {
-  if (evidence.liquidityDays === null) {
-    return {
-      constraint: "minimum_liquidity",
-      status: "UNKNOWN",
-      reason: "Vault liquidity evidence is unavailable.",
-    };
-  }
-
   const pass =
-    evidence.liquidityDays <= mandate.minimumLiquidityDays;
+    mandate.allowedProductIds.includes(evidence.productId);
 
   return {
-    constraint: "minimum_liquidity",
+    constraint: "allowed_product",
     status: pass ? "PASS" : "FAIL",
     reason: pass
-      ? `Vault liquidity horizon of ${evidence.liquidityDays} days is within the permitted ${mandate.minimumLiquidityDays} days.`
-      : `Vault liquidity horizon of ${evidence.liquidityDays} days exceeds the permitted ${mandate.minimumLiquidityDays} days.`,
+      ? `Product ${evidence.productId} is permitted by the mandate.`
+      : `Product ${evidence.productId} is not permitted by the mandate.`,
   };
 }
 
-function checkConcentration(
+function checkChain(
   mandate: TreasuryMandate,
   evidence: VaultEvidence,
 ): ConstraintResult {
-  const exposureAfter =
-    evidence.currentExposureUsd +
-    mandate.proposedAllocationUsd;
-
-  const exposurePct =
-    (exposureAfter / mandate.treasuryUsd) * 100;
-
   const pass =
-    exposurePct <= mandate.maxSingleVaultExposurePct;
+    mandate.allowedChainIds.includes(evidence.chainId);
 
   return {
-    constraint: "single_vault_exposure",
+    constraint: "allowed_chain",
     status: pass ? "PASS" : "FAIL",
     reason: pass
-      ? `Post-allocation exposure is ${exposurePct.toFixed(
-          2,
-        )}%, within the ${mandate.maxSingleVaultExposurePct}% ceiling.`
-      : `Post-allocation exposure is ${exposurePct.toFixed(
-          2,
-        )}%, above the ${mandate.maxSingleVaultExposurePct}% ceiling.`,
+      ? `Chain ${evidence.chainId} (${evidence.chainName}) is permitted by the mandate.`
+      : `Chain ${evidence.chainId} (${evidence.chainName}) is not permitted by the mandate.`,
   };
 }
 
-function checkRegulatedRwa(
+function checkVaultStatus(
   mandate: TreasuryMandate,
   evidence: VaultEvidence,
 ): ConstraintResult {
-  if (!mandate.requireRegulatedRwa) {
+  if (!mandate.requireActiveVault) {
     return {
-      constraint: "regulated_rwa",
+      constraint: "active_vault",
       status: "PASS",
-      reason: "Mandate does not require regulated RWA status.",
+      reason: "Mandate does not require active vault status.",
     };
   }
 
-  if (evidence.regulatedRwa === null) {
-    return {
-      constraint: "regulated_rwa",
-      status: "UNKNOWN",
-      reason: "Regulated RWA status could not be established.",
-    };
-  }
+  const pass = evidence.status.toLowerCase() === "active";
 
   return {
-    constraint: "regulated_rwa",
-    status: evidence.regulatedRwa ? "PASS" : "FAIL",
-    reason: evidence.regulatedRwa
-      ? "Vault is established as a regulated RWA product."
-      : "Vault is not established as a regulated RWA product.",
+    constraint: "active_vault",
+    status: pass ? "PASS" : "FAIL",
+    reason: pass
+      ? "IXS reports the vault as active."
+      : `IXS reports vault status as ${evidence.status}.`,
+  };
+}
+
+function checkDepositSupport(
+  mandate: TreasuryMandate,
+  evidence: VaultEvidence,
+): ConstraintResult {
+  if (!mandate.requireDepositSupport) {
+    return {
+      constraint: "deposit_supported",
+      status: "PASS",
+      reason: "Mandate does not require deposit support.",
+    };
+  }
+
+  const pass = evidence.actions.includes("deposit");
+
+  return {
+    constraint: "deposit_supported",
+    status: pass ? "PASS" : "FAIL",
+    reason: pass
+      ? "IXS reports deposit as a supported vault action."
+      : "IXS does not report deposit as a supported vault action.",
   };
 }
 
@@ -126,7 +116,9 @@ function checkEligibility(
     return {
       constraint: "wallet_eligibility",
       status: "UNKNOWN",
-      reason: "Wallet eligibility could not be established.",
+      reason: evidence.requiresWhitelist
+        ? "Vault requires a whitelist check, but wallet eligibility has not been established."
+        : "Wallet eligibility has not been established.",
     };
   }
 
@@ -134,8 +126,40 @@ function checkEligibility(
     constraint: "wallet_eligibility",
     status: evidence.walletEligible ? "PASS" : "FAIL",
     reason: evidence.walletEligible
-      ? "Wallet satisfies vault eligibility requirements."
-      : "Wallet does not satisfy vault eligibility requirements.",
+      ? "Wallet satisfies the vault eligibility requirements."
+      : "Wallet does not satisfy the vault eligibility requirements.",
+  };
+}
+
+function checkConcentration(
+  mandate: TreasuryMandate,
+  evidence: VaultEvidence,
+): ConstraintResult {
+  if (evidence.currentExposureUsd === null) {
+    return {
+      constraint: "single_vault_exposure",
+      status: "UNKNOWN",
+      reason:
+        "Current wallet exposure has not been established from position evidence.",
+    };
+  }
+
+  const exposureAfter =
+    evidence.currentExposureUsd +
+    mandate.proposedAllocationUsd;
+
+  const exposurePct =
+    (exposureAfter / mandate.treasuryUsd) * 100;
+
+  const pass =
+    exposurePct <= mandate.maxSingleVaultExposurePct;
+
+  return {
+    constraint: "single_vault_exposure",
+    status: pass ? "PASS" : "FAIL",
+    reason: pass
+      ? `Post-allocation exposure is ${exposurePct.toFixed(2)}%, within the ${mandate.maxSingleVaultExposurePct}% ceiling.`
+      : `Post-allocation exposure is ${exposurePct.toFixed(2)}%, above the ${mandate.maxSingleVaultExposurePct}% ceiling.`,
   };
 }
 
@@ -145,10 +169,12 @@ export function evaluateMandate(
 ): TermsDecision {
   const constraints = [
     checkReserve(mandate),
-    checkLiquidity(mandate, evidence),
-    checkConcentration(mandate, evidence),
-    checkRegulatedRwa(mandate, evidence),
+    checkProduct(mandate, evidence),
+    checkChain(mandate, evidence),
+    checkVaultStatus(mandate, evidence),
+    checkDepositSupport(mandate, evidence),
     checkEligibility(mandate, evidence),
+    checkConcentration(mandate, evidence),
   ];
 
   const hasFailure = constraints.some(
@@ -159,9 +185,9 @@ export function evaluateMandate(
     (constraint) => constraint.status === "UNKNOWN",
   );
 
-  // Known violations take precedence over missing evidence.
-  // If we already know the action violates the mandate,
-  // there is no reason to pretend more evidence could authorize it.
+  // A known violation is sufficient to deny authorization.
+  // Missing evidence matters only when no established fact
+  // already proves that the action violates the mandate.
   const verdict =
     hasFailure
       ? "HOLD"
@@ -182,11 +208,7 @@ export function evaluateMandate(
           ? "At least one established fact violates the treasury mandate."
           : "Required evidence is missing or unsupported; authorization cannot be established.",
     decidedAt: new Date().toISOString(),
-
-    // This is deterministic preflight only.
-    // SERV will later produce the bounded reasoning record.
     servUsed: false,
-
     transactionConstructionAllowed:
       verdict === "EXECUTE",
   };

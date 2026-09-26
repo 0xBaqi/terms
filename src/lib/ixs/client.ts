@@ -1,4 +1,4 @@
-import { z } from "zod";
+﻿import { z } from "zod";
 
 import {
   VaultEvidenceSchema,
@@ -93,16 +93,102 @@ export async function getIxsVault(
 
     actions: vault.actions,
 
-    // Current IXS vault responses do not establish these.
-    regulatedRwa: null,
-    liquidityDays: null,
-
-    // Position integration comes next.
-    currentExposureUsd: 0,
+    // Exposure remains unknown until the wallet position is fetched.
+    currentExposureUsd: null,
 
     evidenceTimestamp:
       new Date().toISOString(),
 
     source: "IXS",
   });
+}
+
+const IxsPositionResponseSchema = z.object({
+  position: z.object({
+    vaultId: z.string(),
+    wallet: z.string(),
+
+    balances: z.object({
+      asset: z.object({
+        baseUnits: z.string(),
+        decimals: z.number().int().nonnegative(),
+        display: z.string(),
+      }),
+
+      shares: z.object({
+        baseUnits: z.string(),
+        decimals: z.number().int().nonnegative(),
+        display: z.string(),
+      }),
+
+      shareValueInAssets: z.object({
+        baseUnits: z.string(),
+        decimals: z.number().int().nonnegative(),
+        display: z.string(),
+      }),
+    }),
+
+    limits: z.object({
+      allowanceToVault: z.object({
+        baseUnits: z.string(),
+        decimals: z.number().int().nonnegative(),
+        display: z.string(),
+      }),
+
+      maxWithdraw: z.object({
+        baseUnits: z.string(),
+        decimals: z.number().int().nonnegative(),
+        display: z.string(),
+      }),
+
+      maxRedeem: z.object({
+        baseUnits: z.string(),
+        decimals: z.number().int().nonnegative(),
+        display: z.string(),
+      }),
+    }),
+  }),
+});
+
+export type IxsPosition = z.infer<
+  typeof IxsPositionResponseSchema
+>["position"];
+
+export async function getIxsPosition(
+  vaultId: string,
+  walletAddress: string,
+): Promise<IxsPosition> {
+  const response = await fetch(
+    `${IXS_BASE_URL}/vaults/${encodeURIComponent(
+      vaultId,
+    )}/positions/${encodeURIComponent(walletAddress)}`,
+    {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `IXS position request failed: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  const raw: unknown = await response.json();
+
+  return IxsPositionResponseSchema.parse(raw).position;
+}
+
+export function positionExposureInAssetUnits(
+  position: IxsPosition,
+): number {
+  const value = position.balances.shareValueInAssets;
+
+  const baseUnits = BigInt(value.baseUnits);
+  const scale = 10 ** value.decimals;
+
+  return Number(baseUnits) / scale;
 }

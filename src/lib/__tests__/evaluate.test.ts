@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 
 import { evaluateMandate } from "../terms/evaluate";
 import type {
@@ -11,55 +11,69 @@ const mandate: TreasuryMandate = {
   treasuryUsd: 50_000,
   proposedAllocationUsd: 10_000,
   minimumCashReserveUsd: 18_000,
-  minimumLiquidityDays: 45,
   maxSingleVaultExposurePct: 30,
-  requireRegulatedRwa: true,
+
+  allowedProductIds: ["ixhyb"],
+  allowedChainIds: [43113],
+
+  requireActiveVault: true,
+  requireDepositSupport: true,
   requireWalletEligibility: true,
 };
 
 const evidence: VaultEvidence = {
-  vaultId: "vault-a",
-  name: "Demo RWA Vault",
-  regulatedRwa: true,
+  vaultId: "6a952683732c2b84b55ce89b",
+  name: "IXHYB - Avalanche",
+  productId: "ixhyb",
+
+  chainId: 43113,
+  chainName: "Avalanche Fuji Testnet",
+  network: "avalanche-testnet",
+
+  contractAddress:
+    "0x648c66E8791B1Ea20f01db549B49dE7FBa3f2a53",
+
+  underlyingAssetSymbol: "USDC",
+
+  status: "active",
+
+  requiresWhitelist: false,
   walletEligible: true,
-  liquidityDays: 30,
+
+  ttm: 3.07,
+
+  actions: [
+    "deposit",
+    "mint",
+    "withdraw",
+    "redeem",
+  ],
+
   currentExposureUsd: 0,
+
   evidenceTimestamp: new Date().toISOString(),
   source: "IXS",
-  productId: "ixhyb",
-chainId: 43113,
-chainName: "Avalanche Fuji Testnet",
-network: "avalanche-testnet",
-contractAddress: "0x648c66E8791B1Ea20f01db549B49dE7FBa3f2a53",
-underlyingAssetSymbol: "USDC",
-status: "active",
-requiresWhitelist: false,
-ttm: 3.07,
-actions: ["deposit", "mint", "withdraw", "redeem"],
 };
 
-describe("Terms mandate evaluation", () => {
-  it("EXECUTEs when every required constraint passes", () => {
-    const result = evaluateMandate(
-      mandate,
-      evidence,
-    );
+describe("evaluateMandate", () => {
+  it("EXECUTEs when every required constraint is established and satisfied", () => {
+    const decision =
+      evaluateMandate(mandate, evidence);
 
-    expect(result.verdict).toBe("EXECUTE");
+    expect(decision.verdict).toBe("EXECUTE");
     expect(
-      result.transactionConstructionAllowed,
+      decision.transactionConstructionAllowed,
     ).toBe(true);
 
     expect(
-      result.constraints.every(
-        (constraint) =>
-          constraint.status === "PASS",
+      decision.constraints.every(
+        (constraint) => constraint.status === "PASS",
       ),
     ).toBe(true);
   });
 
-  it("HOLDs when the allocation breaches the cash reserve", () => {
-    const result = evaluateMandate(
+  it("HOLDs when the allocation breaches the cash reserve floor", () => {
+    const decision = evaluateMandate(
       {
         ...mandate,
         proposedAllocationUsd: 35_000,
@@ -67,14 +81,19 @@ describe("Terms mandate evaluation", () => {
       evidence,
     );
 
-    expect(result.verdict).toBe("HOLD");
+    expect(decision.verdict).toBe("HOLD");
+
     expect(
-      result.transactionConstructionAllowed,
-    ).toBe(false);
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "minimum_cash_reserve",
+      )?.status,
+    ).toBe("FAIL");
   });
 
-  it("HOLDs when concentration exceeds the mandate ceiling", () => {
-    const result = evaluateMandate(
+  it("HOLDs when post-allocation concentration exceeds the ceiling", () => {
+    const decision = evaluateMandate(
       mandate,
       {
         ...evidence,
@@ -82,75 +101,222 @@ describe("Terms mandate evaluation", () => {
       },
     );
 
-    expect(result.verdict).toBe("HOLD");
-  });
+    expect(decision.verdict).toBe("HOLD");
 
-  it("HOLDs when the vault liquidity horizon is too long", () => {
-    const result = evaluateMandate(
-      mandate,
-      {
-        ...evidence,
-        liquidityDays: 90,
-      },
-    );
-
-    expect(result.verdict).toBe("HOLD");
-  });
-
-  it("ESCALATEs when required liquidity evidence is missing", () => {
-    const result = evaluateMandate(
-      mandate,
-      {
-        ...evidence,
-        liquidityDays: null,
-      },
-    );
-
-    expect(result.verdict).toBe("ESCALATE");
     expect(
-      result.transactionConstructionAllowed,
-    ).toBe(false);
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "single_vault_exposure",
+      )?.status,
+    ).toBe("FAIL");
   });
 
-  it("ESCALATEs when wallet eligibility cannot be established", () => {
-    const result = evaluateMandate(
+  it("ESCALATEs when current exposure has not been established", () => {
+    const decision = evaluateMandate(
       mandate,
       {
         ...evidence,
+        currentExposureUsd: null,
+      },
+    );
+
+    expect(decision.verdict).toBe("ESCALATE");
+
+    expect(
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "single_vault_exposure",
+      )?.status,
+    ).toBe("UNKNOWN");
+  });
+
+  it("HOLDs when the product is outside the mandate", () => {
+    const decision = evaluateMandate(
+      mandate,
+      {
+        ...evidence,
+        productId: "unapproved-product",
+      },
+    );
+
+    expect(decision.verdict).toBe("HOLD");
+
+    expect(
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "allowed_product",
+      )?.status,
+    ).toBe("FAIL");
+  });
+
+  it("HOLDs when the chain is outside the mandate", () => {
+    const decision = evaluateMandate(
+      mandate,
+      {
+        ...evidence,
+        chainId: 97,
+        chainName: "BSC Testnet",
+      },
+    );
+
+    expect(decision.verdict).toBe("HOLD");
+
+    expect(
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "allowed_chain",
+      )?.status,
+    ).toBe("FAIL");
+  });
+
+  it("HOLDs when IXS reports the vault as inactive", () => {
+    const decision = evaluateMandate(
+      mandate,
+      {
+        ...evidence,
+        status: "inactive",
+      },
+    );
+
+    expect(decision.verdict).toBe("HOLD");
+
+    expect(
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "active_vault",
+      )?.status,
+    ).toBe("FAIL");
+  });
+
+  it("HOLDs when deposit is not a supported action", () => {
+    const decision = evaluateMandate(
+      mandate,
+      {
+        ...evidence,
+        actions: ["withdraw", "redeem"],
+      },
+    );
+
+    expect(decision.verdict).toBe("HOLD");
+
+    expect(
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "deposit_supported",
+      )?.status,
+    ).toBe("FAIL");
+  });
+
+  it("HOLDs when an IXS whitelist check establishes that the wallet is ineligible", () => {
+    const decision = evaluateMandate(
+      mandate,
+      {
+        ...evidence,
+        requiresWhitelist: true,
+        walletEligible: false,
+      },
+    );
+
+    expect(decision.verdict).toBe("HOLD");
+
+    expect(
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "wallet_eligibility",
+      )?.status,
+    ).toBe("FAIL");
+  });
+
+  it("ESCALATEs when a required whitelist result is unavailable", () => {
+    const decision = evaluateMandate(
+      mandate,
+      {
+        ...evidence,
+        requiresWhitelist: true,
         walletEligible: null,
       },
     );
 
-    expect(result.verdict).toBe("ESCALATE");
+    expect(decision.verdict).toBe("ESCALATE");
+
+    expect(
+      decision.constraints.find(
+        (constraint) =>
+          constraint.constraint ===
+          "wallet_eligibility",
+      )?.status,
+    ).toBe("UNKNOWN");
   });
 
-  it("HOLD takes precedence when a known violation and unknown evidence coexist", () => {
-    const result = evaluateMandate(
+  it("gives HOLD precedence over UNKNOWN evidence", () => {
+    const decision = evaluateMandate(
       {
         ...mandate,
         proposedAllocationUsd: 40_000,
       },
       {
         ...evidence,
+        currentExposureUsd: null,
         walletEligible: null,
       },
     );
 
-    expect(result.verdict).toBe("HOLD");
+    expect(decision.verdict).toBe("HOLD");
+    expect(
+      decision.transactionConstructionAllowed,
+    ).toBe(false);
   });
 
-  it("does not require regulated status when the mandate does not demand it", () => {
-    const result = evaluateMandate(
+  it("allows wallet eligibility to be optional when the mandate does not require it", () => {
+    const decision = evaluateMandate(
       {
         ...mandate,
-        requireRegulatedRwa: false,
+        requireWalletEligibility: false,
       },
       {
         ...evidence,
-        regulatedRwa: null,
+        requiresWhitelist: true,
+        walletEligible: null,
       },
     );
 
-    expect(result.verdict).toBe("EXECUTE");
+    expect(decision.verdict).toBe("EXECUTE");
+  });
+
+  it("allows active-vault enforcement to be disabled by the mandate", () => {
+    const decision = evaluateMandate(
+      {
+        ...mandate,
+        requireActiveVault: false,
+      },
+      {
+        ...evidence,
+        status: "inactive",
+      },
+    );
+
+    expect(decision.verdict).toBe("EXECUTE");
+  });
+
+  it("allows deposit-support enforcement to be disabled by the mandate", () => {
+    const decision = evaluateMandate(
+      {
+        ...mandate,
+        requireDepositSupport: false,
+      },
+      {
+        ...evidence,
+        actions: ["withdraw", "redeem"],
+      },
+    );
+
+    expect(decision.verdict).toBe("EXECUTE");
   });
 });
