@@ -38,9 +38,31 @@ export const VaultEvidenceSchema = z.object({
 
   name: z.string().min(1),
 
-  regulatedRwa: z.boolean().nullable(),
+  productId: z.string().min(1),
+
+  chainId: z.number().int().positive(),
+
+  chainName: z.string().min(1),
+
+  network: z.string().min(1),
+
+  contractAddress: z.string().min(1),
+
+  underlyingAssetSymbol: z.string().min(1),
+
+  status: z.string().min(1),
+
+  requiresWhitelist: z.boolean(),
 
   walletEligible: z.boolean().nullable(),
+
+  ttm: z.number().nullable(),
+
+  actions: z.array(z.string()),
+
+  // These are intentionally nullable because the current
+  // IXS API does not establish them.
+  regulatedRwa: z.boolean().nullable(),
 
   liquidityDays: z.number().int().nonnegative().nullable(),
 
@@ -48,7 +70,7 @@ export const VaultEvidenceSchema = z.object({
 
   evidenceTimestamp: z.string().datetime(),
 
-  source: z.string().min(1),
+  source: z.literal("IXS"),
 });
 
 export type VaultEvidence = z.infer<typeof VaultEvidenceSchema>;

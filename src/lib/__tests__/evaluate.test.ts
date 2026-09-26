@@ -26,6 +26,16 @@ const evidence: VaultEvidence = {
   currentExposureUsd: 0,
   evidenceTimestamp: new Date().toISOString(),
   source: "IXS",
+  productId: "ixhyb",
+chainId: 43113,
+chainName: "Avalanche Fuji Testnet",
+network: "avalanche-testnet",
+contractAddress: "0x648c66E8791B1Ea20f01db549B49dE7FBa3f2a53",
+underlyingAssetSymbol: "USDC",
+status: "active",
+requiresWhitelist: false,
+ttm: 3.07,
+actions: ["deposit", "mint", "withdraw", "redeem"],
 };
 
 describe("Terms mandate evaluation", () => {
