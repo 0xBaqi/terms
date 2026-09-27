@@ -1,3 +1,4 @@
+import secondRetry from "./fixtures/serv-second-retry.json";
 import canonical from "./fixtures/serv-canonical.json";
 import missingFields from "./fixtures/serv-missing-fields.json";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -271,7 +272,15 @@ describe("SERV compatibility contract (offline fixtures)", () => {
     const fetch=vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({choices:[{finish_reason:"stop",message:{content:JSON.stringify({verification:{...rest,evidence_sufficient:evidenceSufficient,reason:authorizationRationale}})}}]})));
     expect(await verifyWithServ({mandate,evidence,deterministicDecision})).toEqual(canonical);
     const request=JSON.parse(fetch.mock.calls[0][1]!.body as string);
-    expect(request.response_format).toEqual({type:"json_object"});
+    expect(request.response_format.type).toBe("json_schema");
+    expect(request.response_format.json_schema.strict).toBe(true);
+    const schema = request.response_format.json_schema.schema;
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.required.sort()).toEqual(Object.keys(canonical).sort());
+    expect(Object.keys(schema.properties).sort()).toEqual(Object.keys(canonical).sort());
+    expect(schema.properties.decisionId.enum).toEqual([deterministicDecision.decisionId]);
+    expect(schema.properties.authorizationState.enum).toEqual([deterministicDecision.verdict]);
+    expect(schema.properties.evidenceSufficient).toEqual({type:"boolean"});
     expect(request.messages[0].content).toContain("All six fields are REQUIRED");
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -291,5 +300,43 @@ describe("SERV envelope validation", () => {
     const fetch=vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(raw));
     await expect(verifyWithServ({mandate,evidence,deterministicDecision})).rejects.toThrow();
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("second manual retry capture", () => {
+  const observed = JSON.parse(secondRetry.choices[0].message.content);
+  it("preserves the actual incomplete response and rejects it", () => {
+    expect(secondRetry.choices[0].finish_reason).toBe("stop");
+    expect(Object.keys(observed).sort()).toEqual(["decisionId", "authorization", "vaultId", "mandateId", "unresolvedFacts", "decisiveFacts"].sort());
+    expect(observed).not.toHaveProperty("evidenceSufficient");
+    expect(observed).not.toHaveProperty("authorizationRationale");
+    expect(() => normalizeServVerification(observed)).toThrow("Unsupported SERV output fields");
+  });
+  it("cannot repair missing semantics merely by renaming the verdict and dropping IDs", () => {
+    const {authorization, vaultId, mandateId, ...rest} = observed;
+    void vaultId; void mandateId;
+    expect(() => normalizeServVerification({...rest, authorizationState:authorization})).toThrow("evidenceSufficient");
+    expect(() => normalizeServVerification({...rest, authorizationState:authorization, evidenceSufficient:true})).toThrow("authorizationRationale");
+  });
+  it("replays the exact envelope offline and rejects without fallback or retry", async () => {
+    vi.stubEnv("OPENSERV_KEY", "test-key");
+    vi.spyOn(console,"error").mockImplementation(() => {});
+    const fetch = vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify(secondRetry)));
+    await expect(verifyWithServ({mandate,evidence,deterministicDecision:{...deterministicDecision,decisionId:observed.decisionId}})).rejects.toThrow("Unsupported SERV output fields");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("rejects unsupported structured-output requests without falling back to another paid call", async () => {
+    vi.stubEnv("OPENSERV_KEY", "test-key");
+    const fetch = vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response("Unsupported response_format",{status:400}));
+    await expect(verifyWithServ({mandate,evidence,deterministicDecision})).rejects.toThrow("SERV request failed (400)");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("redacts a credential if it is echoed by rejected provider output", async () => {
+    vi.stubEnv("OPENSERV_KEY", "test-key");
+    const log = vi.spyOn(console,"error").mockImplementation(() => {});
+    vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({error:"test-key"})));
+    await expect(verifyWithServ({mandate,evidence,deterministicDecision})).rejects.toThrow();
+    expect(JSON.stringify(log.mock.calls)).not.toContain("test-key");
+    expect(JSON.stringify(log.mock.calls)).toContain("[REDACTED]");
   });
 });

@@ -116,6 +116,9 @@ Never infer sufficiency solely from the deterministic EXECUTE label.
 Do not wrap the result in another object.
 authorizationRationale MUST be a non-empty JSON string explaining the supplied facts.
 Keep the rationale and fact lists concise. Before returning, check all six keys.
+Use authorizationState, never authorization. Do not return vaultId or mandateId.
+A list of passing constraints is not a substitute for evidenceSufficient or
+authorizationRationale; return both explicitly after reviewing the evidence.
 `.trim();
 
 export async function verifyWithServ(
@@ -146,7 +149,24 @@ export async function verifyWithServ(
         },
       ],
       response_format: {
-        type: "json_object",
+        type: "json_schema",
+        json_schema: {
+          name: "terms_verification",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            required: ["decisionId", "authorizationState", "evidenceSufficient", "decisiveFacts", "unresolvedFacts", "authorizationRationale"],
+            properties: {
+              decisionId: { type: "string", enum: [input.deterministicDecision.decisionId] },
+              authorizationState: { type: "string", enum: [input.deterministicDecision.verdict] },
+              evidenceSufficient: { type: "boolean" },
+              decisiveFacts: { type: "array", items: { type: "string" } },
+              unresolvedFacts: { type: "array", items: { type: "string" } },
+              authorizationRationale: { type: "string" },
+            },
+          },
+        },
       },
       max_completion_tokens: 700,
       temperature: 0,
@@ -217,7 +237,7 @@ export async function verifyWithServ(
     // Preserve rejected provider output for offline reproduction; never send it to UI.
     console.error("SERV response rejected", {
       decisionId: input.deterministicDecision.decisionId,
-      response: raw.slice(0, 65536),
+      response: raw.split(apiKey).join("[REDACTED]").slice(0, 65536),
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
