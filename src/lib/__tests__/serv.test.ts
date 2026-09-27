@@ -340,3 +340,46 @@ describe("second manual retry capture", () => {
     expect(JSON.stringify(log.mock.calls)).toContain("[REDACTED]");
   });
 });
+
+describe("documented OpenServ outgoing contract", () => {
+  it.each(["EXECUTE", "HOLD", "ESCALATE"] as const)("sends the exact bounded request for %s", async verdict => {
+    const key = "mock-contract-secret";
+    vi.stubEnv("OPENSERV_KEY", key);
+    const decision = {...deterministicDecision, verdict};
+    const output = {...canonical, authorizationState:verdict, evidenceSufficient:verdict !== "ESCALATE"};
+    const log = vi.spyOn(console,"error").mockImplementation(() => {});
+    const fetch = vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({choices:[{
+      finish_reason:"stop", message:{content:JSON.stringify(output)},
+    }]})));
+    const result = await verifyWithServ({mandate,evidence,deterministicDecision:decision});
+    expect(result).toEqual(output);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, options] = fetch.mock.calls[0];
+    expect(url).toBe("https://inference-api.openserv.ai/v1/chat/completions");
+    expect(options!.method).toBe("POST");
+    expect(options!.headers).toEqual({Authorization:"Bearer " + key,"Content-Type":"application/json"});
+    const request = JSON.parse(options!.body as string);
+    expect(request).toEqual({
+      model:"gpt-5.4-nano", reasoning_effort:"none", temperature:0, max_completion_tokens:700,
+      messages:[{role:"system",content:expect.any(String)}, {role:"user",content:JSON.stringify({mandate,evidence,deterministicDecision:decision})}],
+      response_format:{type:"json_schema",json_schema:{name:"terms_verification",strict:true,schema:{
+        type:"object", additionalProperties:false,
+        required:["decisionId","authorizationState","evidenceSufficient","decisiveFacts","unresolvedFacts","authorizationRationale"],
+        properties:{
+          decisionId:{type:"string",enum:[decision.decisionId]},
+          authorizationState:{type:"string",enum:[verdict]},
+          evidenceSufficient:{type:"boolean"},
+          decisiveFacts:{type:"array",items:{type:"string"}},
+          unresolvedFacts:{type:"array",items:{type:"string"}},
+          authorizationRationale:{type:"string"},
+        },
+      }}},
+    });
+    expect(request.messages[0].content).toContain("decisionId MUST exactly equal the supplied deterministic decisionId.");
+    expect(request.messages[0].content).toContain("authorizationState MUST exactly equal the supplied deterministic verdict.");
+    expect(request.messages[0].content).toContain("Never infer sufficiency solely from the deterministic EXECUTE label.");
+    expect(options!.body).not.toContain(key);
+    expect(JSON.stringify(result)).not.toContain(key);
+    expect(JSON.stringify(log.mock.calls)).not.toContain(key);
+  });
+});

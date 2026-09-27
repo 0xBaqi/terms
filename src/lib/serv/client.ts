@@ -137,7 +137,8 @@ export async function verifyWithServ(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "serv-nano",
+      model: "gpt-5.4-nano",
+      reasoning_effort: "none",
       messages: [
         {
           role: "system",
