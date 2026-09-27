@@ -1,3 +1,4 @@
+import { issueVerificationTicket } from "@/lib/terms/verification-ticket";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -10,6 +11,7 @@ const ZERO_WALLET =
 
 const EvaluateRequestSchema = z.object({
   mandate: TreasuryMandateSchema,
+  evidenceMode: z.enum(["LIVE", "COUNTERFACTUAL_EVIDENCE_GAP"]).default("LIVE"),
   vaultId: z.string().min(1),
   walletAddress: z
     .string()
@@ -23,10 +25,16 @@ export async function POST(request: Request) {
       await request.json(),
     );
 
-    const evidence = await gatherIxsEvidence(
+    const liveEvidence = await gatherIxsEvidence(
       body.vaultId,
       body.walletAddress,
     );
+
+    // Withhold the selected fact before the real policy evaluation.
+    const counterfactual = body.evidenceMode === "COUNTERFACTUAL_EVIDENCE_GAP";
+    const evidence = counterfactual
+      ? { ...liveEvidence, walletEligible: null }
+      : liveEvidence;
 
     const decision = evaluateMandate(
       body.mandate,
@@ -35,9 +43,11 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ok: true,
-      mode: "POLICY_EVALUATION",
+      mode: counterfactual ? "COUNTERFACTUAL_EVIDENCE_GAP" : "POLICY_EVALUATION",
+      mandate: body.mandate,
       evidence,
       decision,
+      verificationTicket: issueVerificationTicket({ mandate: body.mandate, evidence, decision, walletAddress: body.walletAddress }, counterfactual),
     });
   } catch (error) {
     const message =

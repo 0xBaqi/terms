@@ -1,6 +1,12 @@
 ﻿"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { AuthorizationOutcome } from "./components/authorization-outcome";
+import type { DecisionReceipt } from "@/lib/receipts/decision-receipt";
+import type { TreasuryMandate } from "@/lib/terms/schemas";
+import type { ServVerification } from "@/lib/serv/client";
+import type { ActionGateResult } from "@/lib/terms/action-gate";
 
 type Preset = "permitted" | "breach" | "gap";
 type Verdict = "EXECUTE" | "HOLD" | "ESCALATE";
@@ -46,8 +52,19 @@ type Decision = {
 type EvaluationResult = {
   ok: true;
   mode: string;
+  verificationTicket: { token: string; expiresAt: number } | null;
+  mandate: TreasuryMandate;
   evidence: Evidence;
   decision: Decision;
+};
+
+type VerificationResult = {
+  ok: true;
+  verification: ServVerification;
+  preflight: { ok: boolean; reason?: string };
+  action: ActionGateResult;
+  receipt: DecisionReceipt;
+  transactionRequest: string | null;
 };
 
 const VAULT_ID =
@@ -122,6 +139,19 @@ export default function Home() {
   const [result, setResult] =
     useState<EvaluationResult | null>(null);
 
+  const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
+  const revision = useRef(0);
+  const evaluationBusy = useRef(false);
+  const verificationBusy = useRef(false);
+
+  function resetVerification() {
+    revision.current += 1;
+    setVerificationResult(null);
+    setVerificationError(null);
+  }
+
   const [loading, setLoading] = useState(false);
   const [stale, setStale] = useState(false);
   const [error, setError] =
@@ -131,10 +161,12 @@ export default function Home() {
     useState(true);
 
   function markChanged() {
+    resetVerification();
     if (result) setStale(true);
   }
 
   function applyPreset(next: Preset) {
+    resetVerification();
     setPreset(next);
     setError(null);
 
@@ -163,138 +195,85 @@ export default function Home() {
   }
 
   async function evaluateProposal() {
+    if (evaluationBusy.current || verificationBusy.current) return;
+    evaluationBusy.current = true;
+    resetVerification();
+    const version = revision.current;
+    setResult(null);
     setLoading(true);
     setError(null);
-
     try {
-      if (preset === "gap") {
-        const liveResponse = await fetch(
-          "/api/evaluate",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              mandate: {
-                mandateId: `terms-ui-${Date.now()}`,
-                treasuryUsd,
-                proposedAllocationUsd:
-                  allocationUsd,
-                minimumCashReserveUsd:
-                  reserveFloor,
-                maxSingleVaultExposurePct:
-                  maxExposure,
-                allowedProductIds: ["ixhyb"],
-                allowedChainIds: [43113],
-                requireActiveVault: true,
-                requireDepositSupport: true,
-                requireWalletEligibility: true,
-              },
-              vaultId: VAULT_ID,
-              walletAddress: ZERO_WALLET,
-            }),
+      const response = await fetch("/api/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mandate: {
+            mandateId: `terms-ui-${Date.now()}`,
+            treasuryUsd, proposedAllocationUsd: allocationUsd,
+            minimumCashReserveUsd: reserveFloor,
+            maxSingleVaultExposurePct: maxExposure,
+            allowedProductIds: ["ixhyb"], allowedChainIds: [43113],
+            requireActiveVault: true, requireDepositSupport: true,
+            requireWalletEligibility: true,
           },
-        );
-
-        const liveData = await liveResponse.json();
-
-        if (!liveResponse.ok || !liveData.ok) {
-          throw new Error(
-            liveData.error ??
-              "Live IXS evidence retrieval failed.",
-          );
-        }
-
-        const evidence: Evidence = {
-          ...liveData.evidence,
-          walletEligible: null,
-        };
-
-        const constraints: Constraint[] =
-          liveData.decision.constraints.map(
-            (constraint: Constraint) =>
-              constraint.constraint ===
-              "wallet_eligibility"
-                ? {
-                    ...constraint,
-                    status:
-                      "UNKNOWN" as const,
-                    reason:
-                      "Wallet eligibility evidence intentionally withheld for this counterfactual.",
-                  }
-                : constraint,
-          );
-
-        const decision: Decision = {
-          ...liveData.decision,
-          verdict: "ESCALATE",
-          constraints,
-          summary:
-            "A required authorization fact is unresolved.",
-          transactionConstructionAllowed:
-            false,
-        };
-
-        setResult({
-          ok: true,
-          mode: "COUNTERFACTUAL_EVIDENCE_GAP",
-          evidence,
-          decision,
-        });
-      } else {
-        const response = await fetch(
-          "/api/evaluate",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              mandate: {
-                mandateId: `terms-ui-${Date.now()}`,
-                treasuryUsd,
-                proposedAllocationUsd:
-                  allocationUsd,
-                minimumCashReserveUsd:
-                  reserveFloor,
-                maxSingleVaultExposurePct:
-                  maxExposure,
-                allowedProductIds: ["ixhyb"],
-                allowedChainIds: [43113],
-                requireActiveVault: true,
-                requireDepositSupport: true,
-                requireWalletEligibility: true,
-              },
-              vaultId: VAULT_ID,
-              walletAddress: ZERO_WALLET,
-            }),
-          },
-        );
-
-        const data = await response.json();
-
-        if (!response.ok || !data.ok) {
-          throw new Error(
-            data.error ??
-              "Terms evaluation failed.",
-          );
-        }
-
-        setResult(data);
-      }
-
+          vaultId: VAULT_ID, walletAddress: ZERO_WALLET,
+          evidenceMode: preset === "gap" ? "COUNTERFACTUAL_EVIDENCE_GAP" : "LIVE",
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error ?? "Terms evaluation failed.");
+      if (version !== revision.current) return;
+      setResult(data);
       setStale(false);
     } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "Terms evaluation failed.",
-      );
+      if (version === revision.current) setError(caught instanceof Error ? caught.message : "Terms evaluation failed.");
     } finally {
+      evaluationBusy.current = false;
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!result?.verificationTicket || verificationResult || verifying) return;
+    const timer = setTimeout(() => { resetVerification(); setStale(true); }, Math.max(0, result.verificationTicket.expiresAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [result, verificationResult, verifying]);
+
+  const attemptedDecisions = useRef(new Set<string>());
+
+  async function verifyProposal() {
+    if (!result || stale || evaluationBusy.current || verificationBusy.current || verificationResult ||
+        result.mode === "COUNTERFACTUAL_EVIDENCE_GAP" || result.decision.verdict !== "EXECUTE") return;
+    if (!result.verificationTicket || result.verificationTicket.expiresAt <= Date.now() || attemptedDecisions.current.has(result.decision.decisionId)) return;
+    attemptedDecisions.current.add(result.decision.decisionId);
+    verificationBusy.current = true;
+    const version = revision.current;
+    setVerifying(true);
+    setVerificationError(null);
+    try {
+      const response = await fetch("/api/verify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verificationToken: result.verificationTicket.token, mandate: result.mandate, evidence: result.evidence,
+          decision: result.decision, walletAddress: ZERO_WALLET }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error ?? "SERV verification failed.");
+      if (version !== revision.current) return;
+      if (data.verification.decisionId !== result.decision.decisionId ||
+          data.verification.authorizationState !== result.decision.verdict ||
+          data.action.decisionId !== result.decision.decisionId) throw new Error("Verification does not match this decision.");
+      setVerificationResult(data);
+    } catch (caught) {
+      if (version === revision.current) setVerificationError(caught instanceof Error ? caught.message : "SERV verification failed.");
+    } finally {
+      verificationBusy.current = false;
+      setVerifying(false);
+    }
+  }
+
+  const servStatus = verifying ? "VERIFYING" : verificationError ? "ERROR" :
+    verificationResult ? (verificationResult.verification.evidenceSufficient ? "VERIFIED" : "INSUFFICIENT EVIDENCE") :
+    stale ? "RE-EVALUATE" : result ? "NOT YET VERIFIED" : "READY";
 
   const verdict =
     result?.decision.verdict ?? null;
@@ -351,7 +330,7 @@ export default function Home() {
           <span className="live-dot" />
           IXS EVIDENCE
           <span className="nav-divider" />
-          SERV READY
+          PRE-EXECUTION CONTROL
         </div>
       </nav>
 
@@ -377,6 +356,8 @@ export default function Home() {
         </div>
 
         <div className="hero-index">
+          <span>PROPOSED ALLOCATION</span>
+          <strong>{formatMoney(allocationUsd)}</strong>
           <span>
             DECISION /{" "}
             {shortId(
@@ -392,25 +373,22 @@ export default function Home() {
       </section>
 
       <section className="decision-workspace">
-        <div className="process-rail">
+        <div className="pipeline-heading"><span className="micro-label">THE AUTHORIZATION PIPELINE</span><span>Permission, established one stage at a time.</span></div>
+        <ol className="process-rail" aria-label="Authorization pipeline">
           {[
-            ["01", "Mandate"],
-            ["02", "Evidence"],
-            ["03", "Authorization"],
-            ["04", "Action"],
-          ].map(([number, label], index) => (
-            <div
-              className="rail-step"
-              key={number}
-            >
-              <span>{number}</span>
-              <strong>{label}</strong>
-              {index < 3 && (
-                <div className="rail-line" />
-              )}
-            </div>
+            { label: "Mandate", status: stale ? "CHANGED" : "DEFINED", tone: stale ? "attention" : "complete" },
+            { label: "IXS Evidence", status: loading ? "GATHERING" : evidence ? (isCounterfactual ? "COUNTERFACTUAL" : "CAPTURED") : "AWAITING", tone: evidence && !stale ? "complete" : "pending" },
+            { label: "Policy Engine", status: stale ? "STALE" : loading ? "EVALUATING" : verdict ?? "AWAITING", tone: !stale && verdict ? (verdict === "EXECUTE" ? "complete" : "attention") : "pending" },
+            { label: "SERV Verification", status: stale ? "AWAITING" : verificationResult ? (verificationResult.verification.evidenceSufficient ? "VERIFIED" : "UNRESOLVED") : verifying ? "VERIFYING" : verificationError ? "ERROR" : verdict === "EXECUTE" && !isCounterfactual ? "YOUR NEXT STEP" : "AWAITING", tone: verificationResult?.verification.evidenceSufficient ? "complete" : !stale && verdict === "EXECUTE" ? "current" : "pending" },
+            { label: "IXS Preflight", status: verificationResult ? (verificationResult.preflight.ok ? "PASSED" : verificationResult.action.executionState === "BLOCKED" ? "BLOCKED" : "NOT ATTEMPTED") : "AWAITING", tone: verificationResult?.preflight.ok ? "complete" : verificationResult?.action.executionState === "BLOCKED" ? "stopped" : "pending" },
+            { label: "Action Gate", status: verificationResult?.action.calldataReleased ? "RELEASED" : "WITHHELD", tone: verificationResult?.action.calldataReleased ? "complete" : verificationResult ? "stopped" : "pending" },
+          ].map((step, index) => (
+            <li className={`rail-step ${step.tone}`} key={step.label}>
+              <span className="rail-number">0{index + 1}<span aria-hidden="true">{index < 5 ? "→" : "■"}</span></span>
+              <strong>{step.label}</strong><small>{step.status}</small>
+            </li>
           ))}
-        </div>
+        </ol>
 
         <div className="scenario-bar">
           <div>
@@ -442,6 +420,7 @@ export default function Home() {
             ).map(([key, label]) => (
               <button
                 key={key}
+                aria-pressed={preset === key}
                 className={
                   preset === key
                     ? "active"
@@ -567,7 +546,7 @@ export default function Home() {
             <button
               className="evaluate-button"
               onClick={evaluateProposal}
-              disabled={loading}
+              disabled={loading || verifying}
             >
               <span>
                 {loading
@@ -585,7 +564,7 @@ export default function Home() {
               <div className="counterfactual-note">
                 COUNTERFACTUAL / wallet
                 eligibility evidence will be
-                withheld after live IXS retrieval.
+                withheld server-side before policy evaluation. This is not live eligibility evidence.
               </div>
             )}
 
@@ -600,7 +579,7 @@ export default function Home() {
           <section className="decision-panel panel">
             <div className="decision-topline">
               <span className="micro-label">
-                03 / AUTHORIZATION
+                03 / POLICY ENGINE
               </span>
 
               <span className="decision-id">
@@ -611,15 +590,12 @@ export default function Home() {
               </span>
             </div>
 
-            <div className="verdict-wrap">
+            <div className="verdict-wrap" aria-live="polite" aria-atomic="true">
               {loading ? (
                 <>
-                  <div className="state-orb evaluating-orb">
-                    <div className="orb-core" />
-                  </div>
 
                   <span className="verdict-eyebrow">
-                    LIVE EVALUATION
+                    {preset === "gap" ? "COUNTERFACTUAL EVALUATION" : "LIVE EVIDENCE / POLICY EVALUATION"}
                   </span>
 
                   <h2 className="pending-verdict">
@@ -638,9 +614,6 @@ export default function Home() {
                 </>
               ) : error ? (
                 <>
-                  <div className="state-orb">
-                    <div className="orb-core" />
-                  </div>
 
                   <span className="verdict-eyebrow">
                     EVALUATION ERROR
@@ -659,9 +632,6 @@ export default function Home() {
                 </>
               ) : verdict && copy ? (
                 <>
-                  <div className="state-orb">
-                    <div className="orb-core" />
-                  </div>
 
                   <span className="verdict-eyebrow">
                     {copy.eyebrow}
@@ -686,9 +656,6 @@ export default function Home() {
                 </>
               ) : (
                 <>
-                  <div className="state-orb idle-orb">
-                    <div className="orb-core" />
-                  </div>
 
                   <span className="verdict-eyebrow">
                     AWAITING EVALUATION
@@ -712,6 +679,15 @@ export default function Home() {
               )}
             </div>
 
+            <div className="decision-reasons">
+              <span className="micro-label">{result ? "WHY THIS VERDICT" : "THE DECISION STANDARD"}</span>
+              {result ? <>
+                <p>{result.decision.summary}</p>
+                <ul>{(verdict === "EXECUTE" ? constraints.filter(item => ["minimum_cash_reserve", "single_vault_exposure"].includes(item.constraint)) : constraints.filter(item => item.status !== "PASS")).map(item => (
+                  <li key={item.constraint}><span className={item.status.toLowerCase()}>{item.status === "PASS" ? "✓" : item.status === "FAIL" ? "×" : "?"}</span>{item.reason}</li>
+                ))}</ul>
+              </> : <p>Every required constraint must pass. A known breach means HOLD; an unresolved fact means ESCALATE.</p>}
+            </div>
             <div className="verification-strip">
               <div>
                 <span className="verification-icon">
@@ -719,9 +695,7 @@ export default function Home() {
                 </span>
                 <span>
                   <small>SERV</small>
-                  {result
-                    ? "NOT YET VERIFIED"
-                    : "READY"}
+                  {servStatus}
                 </span>
               </div>
 
@@ -741,7 +715,7 @@ export default function Home() {
                 <span>
                   {result
                     ? isCounterfactual
-                      ? "LIVE + GAP"
+                      ? "COUNTERFACTUAL"
                       : "LIVE EVIDENCE"
                     : "AWAITING"}
                 </span>
@@ -749,85 +723,14 @@ export default function Home() {
             </div>
           </section>
 
-          <aside className="action-panel panel">
-            <div className="panel-heading">
-              <span className="step-number">
-                04
-              </span>
-              <div>
-                <span className="micro-label">
-                  EXECUTION
-                </span>
-                <h2>Action gate</h2>
-              </div>
-            </div>
 
-            <div className="execution-state locked">
-              <span className="execution-symbol">
-                {verdict === "EXECUTE"
-                  ? "!"
-                  : "#"}
-              </span>
-
-              <div>
-                <span>
-                  EXECUTION STATE
-                </span>
-                <strong>
-                  {!result
-                    ? "AWAITING"
-                    : verdict === "EXECUTE"
-                      ? "AUTHORIZATION ONLY"
-                      : "NOT AUTHORIZED"}
-                </strong>
-              </div>
-            </div>
-
-            <p className="execution-copy">
-              {!result
-                ? "Evaluate the proposal before transaction construction can be considered."
-                : verdict === "EXECUTE"
-                  ? "Policy authorization is established. SERV verification and IXS execution preflight are still required before transaction data can be released."
-                  : verdict === "HOLD"
-                    ? "A hard mandate constraint failed. Transaction construction remains locked."
-                    : "Required authorization evidence is unresolved. Transaction construction remains locked."}
-            </p>
-
-            <div className="action-rule">
-              <span>Authorization</span>
-              <strong>
-                {verdict ?? "PENDING"}
-              </strong>
-            </div>
-
-            <div className="action-rule">
-              <span>SERV verification</span>
-              <strong>PENDING</strong>
-            </div>
-
-            <div className="action-rule">
-              <span>Transaction data</span>
-              <strong>WITHHELD</strong>
-            </div>
-
-            <button
-              className="disabled-action"
-              disabled
-            >
-              RELEASE TRANSACTION
-              <span>-&gt;</span>
-            </button>
-
-            <small className="safety-note">
-              Authorization is not execution
-              feasibility.
-            </small>
-          </aside>
         </div>
 
         <section className="evidence-section">
           <button
             className="evidence-toggle"
+            aria-expanded={evidenceOpen}
+            aria-controls="evidence-record"
             onClick={() =>
               setEvidenceOpen(
                 !evidenceOpen,
@@ -870,13 +773,13 @@ export default function Home() {
           </button>
 
           {evidenceOpen && (
-            <div className="evidence-body">
+            <div className="evidence-body" id="evidence-record">
               <div className="evidence-provenance">
                 <div className="provenance-head">
                   <span className="micro-label">
                     SOURCE /{" "}
                     {isCounterfactual
-                      ? "IXS + TEST GAP"
+                      ? "IXS + COUNTERFACTUAL"
                       : "IXS"}
                   </span>
 
@@ -945,14 +848,7 @@ export default function Home() {
                     <div className="provenance-address">
                       <span>CONTRACT</span>
                       <code>
-                        {evidence.contractAddress.slice(
-                          0,
-                          22,
-                        )}
-                        ...
-                        {evidence.contractAddress.slice(
-                          -12,
-                        )}
+                        {evidence.contractAddress}
                       </code>
                     </div>
 
@@ -975,7 +871,7 @@ export default function Home() {
               <div className="constraint-list">
                 <div className="constraint-head">
                   <span className="micro-label">
-                    POLICY EVALUATION
+                    03 / CONSTRAINT RECORD
                   </span>
 
                   <span>
@@ -1043,22 +939,30 @@ export default function Home() {
 
                   <div>
                     <span className="micro-label">
-                      BOUNDED VERIFIER
+                      04 / BOUNDED VERIFIER
                     </span>
                     <strong>SERV</strong>
                   </div>
 
-                  <span className="pending-pill">
-                    PENDING
+                  <span className={verificationResult?.verification.evidenceSufficient ? "verified-pill" : "pending-pill"}>
+                    {servStatus}
                   </span>
                 </div>
 
                 <blockquote>
-                  {result
-                    ? "Deterministic authorization established. SERV verification has not yet been requested."
+                  {verificationResult ? verificationResult.verification.authorizationRationale : isCounterfactual ? "Counterfactual evidence evaluated by the server policy engine. Live SERV verification is unavailable for this scenario." : result
+                    ? "SERV verification has not yet been requested for this deterministic decision."
                     : "Evaluate a proposal before requesting bounded SERV verification."}
                 </blockquote>
 
+                {verificationResult && <div className="serv-facts" aria-live="polite">
+                  <span className="micro-label">DECISIVE FACTS</span>
+                  <ul>{verificationResult.verification.decisiveFacts.map((fact, index) => <li key={index}>{fact}</li>)}</ul>
+                  {!!verificationResult.verification.unresolvedFacts.length && <>
+                    <span className="micro-label">UNRESOLVED FACTS</span>
+                    <ul>{verificationResult.verification.unresolvedFacts.map((fact, index) => <li key={index}>{fact}</li>)}</ul>
+                  </>}
+                </div>}
                 <div className="serv-principle">
                   <span>
                     TERMS PRINCIPLE
@@ -1072,6 +976,10 @@ export default function Home() {
             </div>
           )}
         </section>
+        <AuthorizationOutcome key={result?.decision.decisionId ?? "awaiting"}
+          verdict={verdict} stale={stale} loading={loading} verifying={verifying}
+          counterfactual={isCounterfactual} verificationError={verificationError}
+          verification={verificationResult} onVerify={verifyProposal} />
       </section>
 
       <footer>

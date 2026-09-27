@@ -117,7 +117,7 @@ export async function verifyWithServ(
 
   if (!response.ok) {
     throw new Error(
-      `SERV request failed (${response.status}): ${raw}`,
+      `SERV request failed (${response.status}).`,
     );
   }
 
@@ -135,14 +135,10 @@ export async function verifyWithServ(
     parsed = JSON.parse(content);
   } catch {
     throw new Error(
-      `SERV returned invalid JSON: ${content}`,
+      "SERV returned invalid JSON",
     );
   }
 
-  console.log(
-    "\nRAW SERV VERIFICATION\n",
-    JSON.stringify(parsed, null, 2),
-  );
 
   const verification =
     ServVerificationSchema.parse(parsed);

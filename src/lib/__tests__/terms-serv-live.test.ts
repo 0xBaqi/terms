@@ -4,7 +4,7 @@ import { evaluateMandate } from "../terms/evaluate";
 import { verifyWithServ } from "../serv/client";
 import type { TreasuryMandate } from "../terms/schemas";
 
-describe("Terms + IXS + SERV live integration", () => {
+describe.runIf(process.env.RUN_LIVE_SERV === "1")("Terms + IXS + SERV live integration", () => {
   it(
     "verifies a real IXS treasury decision with SERV",
     async () => {
