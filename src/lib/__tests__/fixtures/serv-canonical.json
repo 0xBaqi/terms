@@ -1,0 +1,10 @@
+{
+  "decisionId": "decision-demo-001",
+  "authorizationState": "EXECUTE",
+  "evidenceSufficient": true,
+  "decisiveFacts": [
+    "The supplied hard constraints pass."
+  ],
+  "unresolvedFacts": [],
+  "authorizationRationale": "The supplied evidence supports the authorization state."
+}

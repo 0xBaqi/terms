@@ -1,3 +1,4 @@
+import { VERIFICATION_FAILURE_MESSAGE } from "../serv/errors";
 import { describe, it, expect, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AuthorizationOutcome } from "../../app/components/authorization-outcome";
@@ -60,6 +61,11 @@ const action={decisionId:decision.decisionId,authorizationState:decision.verdict
 const response={verification:serv,preflight:{ok:false,reason:action.reason},action,receipt:createDecisionReceipt({mandate,evidence,decision,verification:serv,action}),transactionRequest:"DO_NOT_LEAK"};
 const props={verdict:"EXECUTE" as const,stale:false,loading:false,verifying:false,counterfactual:false,verificationError:null,verification:response,onVerify:vi.fn()};
 describe("authorization boundary presentation",()=>{
+  it("keeps failed verification locked and requires re-evaluation",()=>{
+    const html=renderToStaticMarkup(<AuthorizationOutcome {...props} verification={null} verificationError={VERIFICATION_FAILURE_MESSAGE}/>);
+    for (const text of ["REQUEST FAILED", "NOT ATTEMPTED", "WITHHELD", "RECEIPT PENDING", "RE-EVALUATE BEFORE RETRY", "Execution remains locked"]) expect(html).toContain(text);
+    expect(html).not.toContain("Download JSON");
+  });
   it("shows verified, blocked and withheld without exposing transaction data",()=>{
     const html=renderToStaticMarkup(<AuthorizationOutcome {...props}/>);
     expect(html).toContain("VERIFIED"); expect(html).toContain("BLOCKED"); expect(html).toContain("WITHHELD");

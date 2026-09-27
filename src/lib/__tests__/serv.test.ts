@@ -1,5 +1,7 @@
+import canonical from "./fixtures/serv-canonical.json";
+import missingFields from "./fixtures/serv-missing-fields.json";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { verifyWithServ } from "../serv/client";
+import { normalizeServVerification, verifyWithServ } from "../serv/client";
 import type {
   TermsDecision,
   TreasuryMandate,
@@ -59,6 +61,7 @@ const deterministicDecision: TermsDecision = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
 
@@ -203,4 +206,90 @@ describe("SERV bounded verifier", () => {
       );
     },
   );
+});
+describe("SERV compatibility contract (offline fixtures)", () => {
+  it("retains the canonical response", () => {
+    expect(normalizeServVerification(canonical)).toEqual(canonical);
+  });
+  it.each(["evidence_sufficient", "isEvidenceSufficient"])("accepts explicit boolean alias %s", field => {
+    const { evidenceSufficient, ...rest } = canonical;
+    expect(normalizeServVerification({...rest, [field]: evidenceSufficient})).toEqual(canonical);
+    expect(normalizeServVerification({...rest, [field]: false}).evidenceSufficient).toBe(false);
+  });
+  it.each(["authorization_rationale", "rationale", "reason", "explanation"])("maps explicit explanation %s", field => {
+    const { authorizationRationale, ...rest } = canonical;
+    expect(normalizeServVerification({...rest, [field]: authorizationRationale})).toEqual(canonical);
+  });
+  it("accepts only a sole verification wrapper", () => {
+    expect(normalizeServVerification({verification:canonical})).toEqual(canonical);
+  });
+  it.each([
+    missingFields,
+    {...canonical, evidenceSufficient:undefined},
+    {...canonical, authorizationRationale:undefined},
+    {...canonical, evidenceSufficient:"true"},
+    {...canonical, evidenceSufficient:null},
+    {...canonical, authorizationRationale:"  "},
+    {...canonical, rationale:"another explanation"},
+    {...canonical, evidence_sufficient:true},
+    {...canonical, evidence_sufficient:false},
+    {...canonical, unresolvedFacts:["Wallet status unknown"]},
+    {...canonical, authorizationState:"ESCALATE"},
+    {...canonical, decisionId:""},
+    {...canonical, decisiveFacts:"all pass"},
+    {...canonical, extra:"unsupported"},
+    {verification:canonical, ...canonical},
+    {result:canonical}, null, [],
+  ])("rejects incomplete, ambiguous, or contradictory output %#", value => {
+    expect(() => normalizeServVerification(value)).toThrow();
+  });
+  it.each(["EXECUTE", "HOLD", "ESCALATE"])("preserves explicit insufficiency for %s", authorizationState => {
+    expect(normalizeServVerification({...canonical, authorizationState, evidenceSufficient:false, unresolvedFacts:["Unknown fact"]}).evidenceSufficient).toBe(false);
+  });
+  it.each([
+    {content:missingFields},
+    {content:{...canonical, decisionId:"wrong"}},
+    {content:{...canonical, authorizationState:"HOLD"}},
+    {content:canonical, finish_reason:"length"},
+    {content:canonical, finish_reason:"content_filter"},
+    {content:canonical, refusal:"Cannot verify"},
+  ])("rejects provider output without retrying %#", async variant => {
+    vi.stubEnv("OPENSERV_KEY", "test-key");
+    const log=vi.spyOn(console,"error").mockImplementation(() => {});
+    const fetch=vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({choices:[{
+      finish_reason:variant.finish_reason ?? "stop",
+      message:{content:JSON.stringify(variant.content), refusal:variant.refusal},
+    }]})));
+    await expect(verifyWithServ({mandate,evidence,deterministicDecision})).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith("SERV response rejected",expect.objectContaining({decisionId:deterministicDecision.decisionId}));
+    expect(JSON.stringify(log.mock.calls)).not.toContain("test-key");
+  });
+  it("normalizes supported aliases through the real client and retains the request contract", async () => {
+    vi.stubEnv("OPENSERV_KEY", "test-key");
+    const {evidenceSufficient,authorizationRationale,...rest}=canonical;
+    const fetch=vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(JSON.stringify({choices:[{finish_reason:"stop",message:{content:JSON.stringify({verification:{...rest,evidence_sufficient:evidenceSufficient,reason:authorizationRationale}})}}]})));
+    expect(await verifyWithServ({mandate,evidence,deterministicDecision})).toEqual(canonical);
+    const request=JSON.parse(fetch.mock.calls[0][1]!.body as string);
+    expect(request.response_format).toEqual({type:"json_object"});
+    expect(request.messages[0].content).toContain("All six fields are REQUIRED");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SERV envelope validation", () => {
+  it.each([
+    "not JSON",
+    JSON.stringify({choices:[]}),
+    JSON.stringify({choices:[{message:{content:"not JSON"}}]}),
+    JSON.stringify({choices:[{message:{content:canonical}}]}),
+    JSON.stringify({choices:[{message:{content:JSON.stringify(canonical)}},{message:{content:JSON.stringify(canonical)}}]}),
+    "x".repeat(65537),
+  ])("rejects malformed or oversized envelope %# with one request", async raw => {
+    vi.stubEnv("OPENSERV_KEY", "test-key");
+    vi.spyOn(console,"error").mockImplementation(() => {});
+    const fetch=vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(raw));
+    await expect(verifyWithServ({mandate,evidence,deterministicDecision})).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });

@@ -1,0 +1,9 @@
+# SERV compatibility repair
+
+The failed call parsed as JSON but was missing evidenceSufficient and authorizationRationale at the expected level, according to the reported Zod error. The prior checkpoint removed raw logging. The available server log contains no response, so exact aliases/nesting and provider behavior cannot be established. The request used json_object, not an enforced schema; the six-field prompt was already present and was not changed by fe38e47.
+
+Compatibility v1 accepts canonical fields or a sole verification wrapper. Explicit boolean aliases: evidence_sufficient, isEvidenceSufficient. Explicit explanation aliases: authorization_rationale, rationale, reason, explanation. Exactly one name per field is required. Decision ID and state are never inferred or renamed. Unknown fields, multiple aliases, missing values, string booleans, blank rationale, contradictory sufficiency, refusals and incomplete completions are rejected. No sufficiency is derived from EXECUTE or an empty unresolvedFacts array. These aliases are a deliberately supported contract, not observed live variants.
+
+No OpenServ strict-schema support was verified, so json_object is retained with stronger instructions. No automatic fallback requests or retries are performed. A rejected response is bounded and logged only server-side with its decision ID; request headers, keys and tickets are not logged. Logs may contain provider explanation text and should remain private.
+
+The missing-fields fixture is a reconstruction of the reported symptom, not an exact captured payload. It must continue to fail closed. Successful offline checks justify a single monitored manual retry, but cannot guarantee the unobserved provider shape is covered. Start with a fresh evaluation; never reuse the consumed attempt.

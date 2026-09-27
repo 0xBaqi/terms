@@ -1,3 +1,4 @@
+import { VERIFICATION_FAILURE_MESSAGE } from "@/lib/serv/errors";
 import { consumeVerificationTicket } from "@/lib/terms/verification-ticket";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -114,15 +115,12 @@ export async function POST(request: Request) {
       transactionRequest,
     });
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "SERV verification failed.";
+    console.error("Terms verification failed", error);
 
     return NextResponse.json(
       {
         ok: false,
-        error: message,
+        error: VERIFICATION_FAILURE_MESSAGE,
       },
       {
         status: 400,

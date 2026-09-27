@@ -1,5 +1,7 @@
 ﻿"use client";
 
+import { VERIFICATION_FAILURE_MESSAGE } from "@/lib/serv/errors";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AuthorizationOutcome } from "./components/authorization-outcome";
@@ -263,8 +265,8 @@ export default function Home() {
           data.verification.authorizationState !== result.decision.verdict ||
           data.action.decisionId !== result.decision.decisionId) throw new Error("Verification does not match this decision.");
       setVerificationResult(data);
-    } catch (caught) {
-      if (version === revision.current) setVerificationError(caught instanceof Error ? caught.message : "SERV verification failed.");
+    } catch {
+      if (version === revision.current) setVerificationError(VERIFICATION_FAILURE_MESSAGE);
     } finally {
       verificationBusy.current = false;
       setVerifying(false);

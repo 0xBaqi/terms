@@ -64,10 +64,11 @@ const walletAddress = "0x0000000000000000000000000000000000000000";
 const request = (body: unknown) => new Request("http://localhost/api", { method: "POST", body: JSON.stringify(body) });
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.spyOn(console, "error").mockImplementation(() => {});
   vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Unexpected network request in route tests"); }));
   vi.mocked(gatherIxsEvidence).mockResolvedValue(evidence);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("evaluation route", () => {
   it("evaluates withheld eligibility on the server and labels it counterfactual", async () => {
     const response = await evaluate(request({ mandate, vaultId: evidence.vaultId, walletAddress, evidenceMode: "COUNTERFACTUAL_EVIDENCE_GAP" }));
@@ -180,6 +181,19 @@ describe("verification route", () => {
     await verify(request(input)); await verify(request(input));
     expect(verifyWithServ).toHaveBeenCalledTimes(1);
     expect(preflightIxsDeposit).not.toHaveBeenCalled();
+  });
+  it("hides schema diagnostics and consumes the failed attempt", async () => {
+    const input = body();
+    vi.mocked(verifyWithServ).mockRejectedValue(new Error('[{"path":["evidenceSufficient"],"expected":"boolean"}]'));
+    const response = await verify(request(input));
+    const data = await response.json();
+    expect(data.error).toContain("Execution remains locked");
+    expect(JSON.stringify(data)).not.toContain("evidenceSufficient");
+    expect(data.receipt).toBeUndefined();
+    expect(data.transactionRequest).toBeUndefined();
+    expect(preflightIxsDeposit).not.toHaveBeenCalled();
+    await verify(request(input));
+    expect(verifyWithServ).toHaveBeenCalledTimes(1);
   });
   it("fails closed on SERV errors", async () => {
     const input = body(); vi.mocked(verifyWithServ).mockRejectedValue(new Error("SERV unavailable"));
